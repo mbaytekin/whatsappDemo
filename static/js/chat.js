@@ -1,13 +1,12 @@
 let currentUserId = 'user_' + Date.now();
 
 const CATEGORY_PROMPT = [
-    'Sultangazi Belediyesi Kamu Destek Hattına hoş geldiniz.',
-    'Size nasıl yardımcı olalım?',
-    '1) İstek ve Şikayet',
-    '2) Bilgi/Hizmetler (yakında)',
-    '3) E-Belediye (yakında)',
+    'Sultangazi Belediyesi’ne hoş geldiniz.',
+    'Size nasıl yardımcı olabilirim?',
     '',
-    'Lütfen 1, 2 veya 3 yazın.'
+    '1) İstek/Şikâyet Bildir',
+    '2) Bilgi Al',
+    '3) Başvuru Sorgula'
 ].join('\n');
 
 const QUICK_REPLIES = [

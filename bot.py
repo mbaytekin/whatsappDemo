@@ -9,19 +9,30 @@ from router import TopicRouter, RouteDecision
 
 
 CATEGORY_OPTIONS = (
-    "1) İstek ve Şikayet\n"
-    "2) Bilgi/Hizmetler (yakında)\n"
-    "3) E-Belediye (yakında)"
+    "1) İstek/Şikâyet Bildir\n"
+    "2) Bilgi Al\n"
+    "3) Başvuru Sorgula"
 )
 
 CATEGORY_PROMPT = (
-    "Sultangazi Belediyesi Kamu Destek Hattına hoş geldiniz.\n"
-    "Size nasıl yardımcı olalım?\n"
-    f"{CATEGORY_OPTIONS}\n\n"
-    "Lütfen 1, 2 veya 3 yazın."
+    "Sultangazi Belediyesi’ne hoş geldiniz. Size nasıl yardımcı olabilirim?\n\n"
+    f"{CATEGORY_OPTIONS}"
 )
 
-REQUEST_SELECTED = "İstek ve Şikayet seçildi. Lütfen talebinizi yazın."
+REQUEST_SELECTED = "İstek/Şikâyet Bildirimi seçildi. Lütfen talebinizi yazın."
+
+DETAILS_PROMPT = (
+    "Teşekkürler. Talebinizi iletmem için lütfen:\n"
+    "- Açık adres (mahalle/sokak/no) veya konum paylaşın.\n"
+    "- Varsa fotoğraf ekleyebilirsiniz."
+)
+
+MENU_AFTER_DETAILS = (
+    "Başka bir talebiniz var mı?\n\n"
+    "1) Yeni talep\n"
+    "2) Başvuru sorgula\n"
+    "3) Menü"
+)
 
 @dataclass
 class Session:
@@ -65,17 +76,24 @@ class WhatsAppBot:
         }
         return normalized in greetings
 
+    def _generate_ticket_no(self) -> str:
+        import random
+        from datetime import datetime
+        year = datetime.now().year
+        rand_id = random.randint(100000, 999999)
+        return f"SGZ-{year}-{rand_id}"
+
     def _parse_category_choice(self, text: str) -> Optional[str]:
         normalized = self._normalize_text(text)
         if not normalized:
             return None
 
-        if normalized in {"1", "1.", "istek", "istek ve sikayet", "sikayet"}:
+        if normalized in {"1", "1.", "istek", "sikayet", "bildir", "istek ve sikayet"}:
             return "request"
-        if normalized in {"2", "2.", "bilgi", "bilgi/hizmetler", "bilgi hizmetler", "hizmet", "hizmetler"}:
+        if normalized in {"2", "2.", "bilgi", "bilgi al"}:
             return "info"
-        if normalized in {"3", "3.", "e-belediye", "ebelediye", "e belediye"}:
-            return "ebelediye"
+        if normalized in {"3", "3.", "sorgula", "basvuru sorgula", "sorgu"}:
+            return "query"
         return None
 
     def _is_category_only(self, text: str) -> bool:
@@ -150,6 +168,21 @@ class WhatsAppBot:
         tokens = set(normalized.split())
         return bool(tokens & keywords)
 
+    def _is_valid_address(self, text: str) -> bool:
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return False
+            
+        address_keywords = {
+            "mahalle", "mah", "sokak", "sok", "cadde", "cad", "bulvar", "blv",
+            "no", "numara", "daire", "kat", "blok", "sitesi", "apartmani",
+            "mevkii", "karsisi", "yani", "arkasi"
+        }
+        
+        tokens = set(normalized.split())
+        # En az bir adres anahtar kelimesi geçmeli VEYA metin yeterince uzun olmalı
+        return bool(tokens & address_keywords) or len(text.strip()) > 20
+
     def _normalize_text(self, text: str) -> str:
         lowered = text.casefold()
         lowered = lowered.replace("ı", "i").replace("ş", "s").replace("ğ", "g")
@@ -168,17 +201,19 @@ class WhatsAppBot:
 
     def _confirmation_message(self, unit: str) -> str:
         return (
-            f"Teşekkürler. Talebiniz '{unit}' birimine bildirilmiştir.\n"
-            "Daha hızlı destek için açık adres/mahalle ve mümkünse fotoğraf paylaşabilir misiniz?"
+            f"Anladım, bu konu '{unit}' ile ilgili.\n\n"
+            f"{DETAILS_PROMPT}"
         )
 
     def _details_received_message(self, unit: Optional[str]) -> str:
-        if unit:
-            return (
-                f"Teşekkürler. Paylaştığınız ek bilgileri '{unit}' birimine ilettim.\n"
-                "Başka bir talebiniz varsa yazabilirsiniz."
-            )
-        return "Teşekkürler. Ek bilgiler alındı. Başka bir talebiniz varsa yazabilirsiniz."
+        ticket_no = self._generate_ticket_no()
+        prefix = f"Teşekkürler. Talebiniz '{unit}' birimine iletilmiştir.\n" if unit else "Teşekkürler, bilgileri ilettim.\n"
+        msg = (
+            f"{prefix}"
+            f"Kayıt No: {ticket_no}\n\n"
+            f"{MENU_AFTER_DETAILS}"
+        )
+        return msg
 
     def handle_message(self, user_id: str, text: str) -> str:
         now = datetime.utcnow()
@@ -203,22 +238,27 @@ class WhatsAppBot:
                 s.stage = "awaiting_request"
                 if self._is_category_only(text):
                     return REQUEST_SELECTED
-            elif choice in {"info", "ebelediye"}:
+            elif choice in {"info", "query"}:
                 return (
-                    "Şu an yalnızca İstek ve Şikayet hizmeti veriyoruz.\n\n"
-                    f"{CATEGORY_OPTIONS}\n\n"
-                    "Lütfen 1 yazarak devam edin."
+                    "Bu hizmet şu an geliştirme aşamasındadır. Yakında hizmete açılacaktır.\n\n"
+                    f"{CATEGORY_OPTIONS}"
                 )
             else:
-                # Seçim yapılmadıysa, isteği direkt İstek/Şikayet olarak işle
+                # Seçim değilse, direkt talep olarak işle
                 s.stage = "awaiting_request"
 
-        # Önceki adımda detay istenmişse: gelen her yanıtı detay kabul et
+        # Önceki adımda detay istenmişse: adres doğrulaması yap
         if s.stage == "awaiting_details":
-            s.stage = "awaiting_request"
-            reply = self._details_received_message(s.last_unit)
-            s.last_unit = None
-            return reply
+            if self._is_valid_address(text):
+                s.stage = "awaiting_request"
+                reply = self._details_received_message(s.last_unit)
+                s.last_unit = None
+                return reply
+            else:
+                return (
+                    "Lütfen geçerli bir adres (mahalle, sokak, numara) belirtiniz. "
+                    "Talebinizi iletebilmemiz için konum bilgisi zorunludur."
+                )
 
         # Talep al ve yönlendir
         decision: RouteDecision = self.router.route(text)
