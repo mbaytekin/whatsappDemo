@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sultangazi Belediyesi - WhatsApp Bot</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="chat-shell">
+        <header class="chat-header">
+            <div class="brand">
+                <div class="brand-icon">💬</div>
+                <div class="brand-text">
+                    <div class="brand-title">Sultangazi Belediyesi</div>
+                    <div class="brand-sub">Kamu Destek Hattı • Çevrimiçi</div>
+                </div>
+            </div>
+            <button class="new-chat-btn" onclick="startNewChat()">Yeni konuşma</button>
+        </header>
+
+        <div class="helper-bar">
+            <div class="helper-chip">📍 Mahalle + Sokak</div>
+            <div class="helper-chip">🕒 Zaman</div>
+            <div class="helper-chip">📷 Fotoğraf</div>
+        </div>
+        
+        <div class="chat-messages" id="chatMessages">
+            <!-- Mesajlar buraya gelecek -->
+        </div>
+
+        <div class="quick-replies" id="quickReplies"></div>
+        
+        <div class="chat-input-container">
+            <input 
+                type="text" 
+                id="messageInput" 
+                placeholder="Talebinizi yazın... (örn: Mahallemizde çöp alınmadı)"
+                onkeypress="handleKeyPress(event)"
+            >
+            <button onclick="sendMessage()">Gönder</button>
+        </div>
+    </div>
+    
+    <script src="/static/js/chat.js"></script>
+</body>
+</html>
