@@ -6,6 +6,7 @@ WhatsApp benzeri web arayüzüne sahip, Gemini AI destekli belediye destek hatt�
 
 - **WhatsApp Benzeri Web Arayüzü**: Modern, responsive chat arayüzü
 - **Gemini AI Entegrasyonu**: Google Gemini 2.5 Flash modeli ile akıllı yönlendirme
+- **Ses Kaydı ve Transkripsiyon**: Faster-Whisper ile ses mesajlarını metne çevirme
 - **TF-IDF Ön Filtreleme**: Hızlı ve maliyet-etkin arama
 - **Excel Tabanlı Yönetim**: Konu ve birim bilgileri Excel'den yüklenir
 - **Türkçe Dil Desteği**: Türkçe metin işleme ve karakter normalizasyonu
@@ -19,6 +20,7 @@ WhatsApp benzeri web arayüzüne sahip, Gemini AI destekli belediye destek hatt�
 - Conda (önerilen) veya pip
 - Gemini API anahtarı
 - Excel dosyası (Konu-Birim bilgileri)
+- FFmpeg (opsiyonel - ses süresi kontrolü için)
 
 ## 🛠️ Kurulum
 
@@ -79,6 +81,8 @@ uvicorn app:app --reload --port 8000
 
 Tarayıcıda `http://localhost:8000` adresini açın.
 
+**Ses Kaydı Özelliği**: Web arayüzünde mikrofon butonuna tıklayarak ses kaydı yapabilir ve mesajınızı sesli olarak gönderebilirsiniz. Ses otomatik olarak metne çevrilir ve bot'a iletilir.
+
 ### CLI Demo ile Test
 
 ```bash
@@ -119,11 +123,27 @@ whatsappDemo/
 
 ### Environment Variables
 
+#### Gemini AI
 - `GEMINI_API_KEY`: Gemini API anahtarı (zorunlu)
 - `GEMINI_MODEL`: Kullanılacak model (varsayılan: `gemini-2.5-flash`)
+
+#### Whisper (Ses Transkripsiyon)
+- `WHISPER_MODEL`: Whisper model adı (varsayılan: `medium`)
+  - Seçenekler: `tiny`, `base`, `small`, `medium`, `large-v2`, `large-v3`
+- `WHISPER_DEVICE`: Cihaz tipi (varsayılan: `auto`)
+  - Seçenekler: `auto`, `cpu`, `cuda`
+- `WHISPER_COMPUTE_TYPE`: Hesaplama tipi (varsayılan: `auto`)
+  - Seçenekler: `auto`, `int8`, `float16`, `int8_float16`
+- `WHISPER_MAX_MB`: Maksimum ses dosyası boyutu MB (varsayılan: `15`)
+- `WHISPER_MAX_SECONDS`: Maksimum ses süresi saniye (varsayılan: `90`)
+
+#### Diğer
 - `KONU_BIRIM_EXCEL`: Excel dosyası yolu (varsayılan: `data/Konular.xlsx`)
 - `LOG_LEVEL`: Log seviyesi (varsayılan: `INFO`)
 - `LOG_FILE`: Log dosyası yolu (opsiyonel)
+- `TMPDIR`: Geçici dosya dizini (opsiyonel)
+
+**Not**: `ffprobe` (FFmpeg) ses süresi kontrolü için kullanılır. Yüklü değilse süre kontrolü atlanır. FFmpeg'i [buradan](https://ffmpeg.org/download.html) indirebilirsiniz.
 
 ### Router Ayarları
 
@@ -149,9 +169,11 @@ Excel dosyanızdaki konulara göre:
 ## 📊 Nasıl Çalışır?
 
 1. **Excel Yükleme**: Uygulama başlangıcında Excel'den tüm konular yüklenir
-2. **TF-IDF Ön Filtreleme**: Kullanıcı mesajı geldiğinde TF-IDF ile en iyi 8 aday seçilir
-3. **Gemini AI Kararı**: Seçilen adaylar Gemini'ye gönderilir, en uygun eşleşme seçilir
-4. **Yönlendirme**: Kullanıcıya ilgili birim bilgisi döndürülür
+2. **Mesaj Alma**: Kullanıcı metin veya ses mesajı gönderir
+3. **Ses Transkripsiyon** (opsiyonel): Ses mesajı varsa Faster-Whisper ile metne çevrilir
+4. **TF-IDF Ön Filtreleme**: Kullanıcı mesajı geldiğinde TF-IDF ile en iyi 8 aday seçilir
+5. **Gemini AI Kararı**: Seçilen adaylar Gemini'ye gönderilir, en uygun eşleşme seçilir
+6. **Yönlendirme**: Kullanıcıya ilgili birim bilgisi döndürülür
 
 ## 🔒 Güvenlik
 
@@ -178,5 +200,6 @@ Sorularınız için issue açabilirsiniz.
 ## 🙏 Teşekkürler
 
 - Google Gemini AI
+- Faster-Whisper
 - FastAPI
 - scikit-learn

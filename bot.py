@@ -16,6 +16,12 @@ CATEGORY_OPTIONS = (
     "5) Nöbetçi Eczaneler"
 )
 
+HUMAN_WELCOME_MESSAGE = (
+    "Merhaba komşum, ben Osman. Sultangazi Belediyesi'nden yazıyorum. "
+    "Memnuniyetle yardımcı olurum. Aşağıdaki seçeneklerden birini yazabilir misiniz?\n\n"
+    f"{CATEGORY_OPTIONS}"
+)
+
 OSMAN_SYSTEM_PROMPT = (
     "Sen Sultangazi Belediyesi'nde çalışan Osman isimli, çok yardımsever, samimi ve nazik bir personelsin. "
     "Vatandaşla bir insan gibi, samimi bir dille ('komşum', 'hemşehrim', 'Değerli komşum') konuşursun. "
@@ -37,7 +43,7 @@ OSMAN_SYSTEM_PROMPT = (
 
 @dataclass
 class Session:
-    stage: str  # "awaiting_category" | "awaiting_name" | "awaiting_tc" | "awaiting_address" | "awaiting_issue"
+    stage: str  # "awaiting_category" | "awaiting_name" | "awaiting_tc" | "awaiting_address" | "awaiting_issue" | "awaiting_followup"
     last_seen: datetime
     name: Optional[str] = None
     tc: Optional[str] = None
@@ -184,6 +190,10 @@ class WhatsAppBot:
             return True
 
         for key in keywords:
+            if key in normalized:
+                return True
+
+        for key in keywords:
             if " " in key and key in normalized:
                 return True
 
@@ -238,6 +248,33 @@ class WhatsAppBot:
         cleaned = re.sub(r"[^\w\s]", " ", lowered)
         return " ".join(cleaned.split())
 
+    def _followup_question(self) -> str:
+        return "Başka yardımcı olabileceğim bir şey var mı?"
+
+    def _is_negative_response(self, text: str) -> bool:
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return True
+        negatives = {
+            "hayir",
+            "yok",
+            "gerek yok",
+            "yok tesekkurler",
+            "tesekkur",
+            "tesekkurler",
+            "yok sagol",
+            "sagol",
+            "yok sagolun",
+            "sag olun",
+            "yok istemiyorum",
+        }
+        if normalized in negatives:
+            return True
+        for phrase in negatives:
+            if " " in phrase and phrase in normalized:
+                return True
+        return False
+
     def _get_session(self, user_id: str) -> Optional[Session]:
         s = self.sessions.get(user_id)
         if not s:
@@ -246,6 +283,35 @@ class WhatsAppBot:
             self.sessions.pop(user_id, None)
             return None
         return s
+
+    def _finalize_request(self, s: Session, issue_text: str) -> str:
+        decision: RouteDecision = self.router.route(issue_text)
+        result = decision.result
+
+        if not result.matched:
+            if self._looks_like_municipal(issue_text):
+                s.stage = "awaiting_issue"
+                return (
+                    "Mesajınızı anlayamadım. Lütfen talebinizi daha anlaşılır ve detaylı yazar mısınız? "
+                    "Örn: \"Mahallemizde çöp alınmadı\" veya \"Sokakta çukur var\""
+                )
+            s.stage = "awaiting_issue"
+            return (
+                "Bu hat yalnızca belediye istek ve şikayetleri içindir. "
+                "Lütfen belediye hizmetleriyle ilgili bir talep yazın."
+            )
+
+        # Kısa onay + follow-up sorusu
+        s.stage = "awaiting_followup"
+        s.name = None
+        s.tc = None
+        s.address = None
+        s.issue = None
+
+        return (
+            "Talebinizi ilgili birimlerimize ilettim. "
+            + self._followup_question()
+        )
 
 
 
@@ -258,7 +324,7 @@ class WhatsAppBot:
             s = Session(stage="awaiting_category", last_seen=now)
             self.sessions[user_id] = s
             if not text or self._should_send_welcome(text):
-                return self._get_osman_response(text or "Merhaba", "Vatandaşla ilk kez karşılaşıyorsun veya selamlaştın. Kendini tanıt ve 5 hizmet kategorisini samimi bir dille sun.")
+                return HUMAN_WELCOME_MESSAGE
 
         # Oturum güncelle
         s.last_seen = now
@@ -270,8 +336,10 @@ class WhatsAppBot:
                 return self._get_osman_response("Merhaba", "Vatandaş boş mesaj gönderdi. Tekrar yardımcı olmayı teklif et ve menüyü hatırplat.")
             choice = self._parse_category_choice(text)
             if choice == "request":
+                if not self._is_category_only(text) and self._looks_like_municipal(text):
+                    s.issue = normalized
                 s.stage = "awaiting_name"
-                return self._get_osman_response(normalized, "Vatandaş talep oluşturmak istediğini belirtti. Nazikçe adını ve soyadını sor.")
+                return "Geçmiş olsun komşum. İşlemi başlatmak için adınızı ve soyadınızı alabilir miyim?"
             elif choice in {"education", "social_aid", "library", "pharmacy"}:
                 return (
                     "Bu hizmet şu an hazırlık aşamasındadır. En kısa sürede Osman olarak size bu konuda da hizmet vereceğim.\n\n"
@@ -280,8 +348,10 @@ class WhatsAppBot:
                 )
             else:
                 # Seçim değilse, direkt talep olarak işle
+                if self._looks_like_municipal(text):
+                    s.issue = normalized
                 s.stage = "awaiting_name"
-                return self._get_osman_response(normalized, "Vatandaş doğrudan bir mesaj yazdı. Yardımcı olacağını söyleyip adını ve soyadını sor.")
+                return "Anladım komşum, yardımcı olayım. Önce adınızı ve soyadınızı alabilir miyim?"
 
         if s.stage == "awaiting_name":
             if not self._is_valid_name(normalized):
@@ -302,44 +372,27 @@ class WhatsAppBot:
             if not self._is_valid_address(normalized):
                 return self._get_osman_response(normalized, "Adres bilgisi yetersiz. Mahalle, sokak gibi detayları içeren adresi tekrar sor.")
             s.address = normalized
+            if s.issue:
+                return self._finalize_request(s, s.issue)
             s.stage = "awaiting_issue"
-            return self._get_osman_response(normalized, "Adres bilgisini de aldın. Şimdi vatandaşın ne şikayeti veya talebi olduğunu bir dostunla konuşur gibi anlatmasını iste.")
+            return "Adres bilgisini aldım. Şimdi talebinizi kısaca yazabilir misiniz?"
 
         if s.stage == "awaiting_issue":
-            # Talep al ve yönlendir
-            decision: RouteDecision = self.router.route(text)
-            result = decision.result
+            return self._finalize_request(s, normalized)
 
-            if not result.matched:
-                if self._looks_like_municipal(text):
-                    return (
-                        "Mesajınızı anlayamadım. Lütfen talebinizi daha anlaşılır ve detaylı yazar mısınız? "
-                        "Örn: \"Mahallemizde çöp alınmadı\" veya \"Sokakta çukur var\""
-                    )
-                return (
-                    "Bu hat yalnızca belediye istek ve şikayetleri içindir. "
-                    "Lütfen belediye hizmetleriyle ilgili bir talep yazın."
-                )
-
-            # Teknik detayları (ticket_no, unit) kullanıcıya göstermiyoruz, sadece arka planda üretiyoruz (veya logluyoruz)
-            ticket_no = self._generate_ticket_no()
-            unit = result.unit
-            
-            # İnsancıl, samimi bir kapanış mesajı
-            reply = (
-                f"Değerli hemşehrim/komşum {s.name}, talebinizi ve şikayetinizi hassasiyetle not aldım. "
-                f"Gerekli incelemelerin yapılması ve en kısa sürede çözüme kavuşturulması için ilgili birimlerimize bilgi verdim. "
-                f"Sultangazi Belediyemiz siz kıymetli komşularımız için her daim görev başında ve tüm imkanlarıyla yanınızdadır. "
-                f"Başka bir arzunuz olursa ben Osman olarak her zaman buradayım. Hayırlı günler dilerim."
-            )
-            
-            # Oturumu temizle veya menü aşamasına çek
+        if s.stage == "awaiting_followup":
+            if self._is_negative_response(text):
+                s.stage = "awaiting_category"
+                return ""
+            normalized_follow = self._normalize_text(text)
+            if normalized_follow in {"evet", "var", "tabii", "peki", "olur"}:
+                s.stage = "awaiting_category"
+                return f"Elbette, şu seçeneklerden birini yazabilirsiniz:\n\n{CATEGORY_OPTIONS}"
+            if self._looks_like_municipal(text):
+                s.issue = normalized
+                s.stage = "awaiting_name"
+                return self._get_osman_response(normalized, "Yeni bir talep var. Nazikçe adını ve soyadını sor.")
             s.stage = "awaiting_category"
-            s.name = None
-            s.tc = None
-            s.address = None
-            s.issue = None
-            
-            return reply + "\n\n" + CATEGORY_OPTIONS
+            return f"{CATEGORY_OPTIONS}\n\nLütfen bir seçenek yazın."
 
-        return CATEGORY_PROMPT
+        return f"{CATEGORY_OPTIONS}\n\nLütfen bir seçenek yazın."

@@ -1,6 +1,20 @@
 let currentUserId = 'user_' + Date.now();
+let mediaRecorder = null;
+let recordingChunks = [];
+let recordingTimer = null;
+let recordingInterval = null;
+const MAX_RECORD_SECONDS = 90;
 
-// CATEGORY_PROMPT removed for dynamic AI greeting.
+const WELCOME_MESSAGE = [
+    'Merhaba komşum, ben Osman. Sultangazi Belediyesi\'nden yazıyorum.',
+    'Memnuniyetle yardımcı olurum. Aşağıdaki seçeneklerden birini yazabilir misiniz?',
+    '',
+    '1) Talep Oluşturma',
+    '2) Eğitim ve Kurs Başvuru',
+    '3) Yardımlar',
+    '4) Millet Kütüphaneleri Randevu Alma',
+    '5) Nöbetçi Eczaneler'
+].join('\n');
 
 const QUICK_REPLIES = [
     { label: 'Çöp/Temizlik', text: 'Mahallemizde çöp alınmadı, konteynerler taşıyor.' },
@@ -10,23 +24,9 @@ const QUICK_REPLIES = [
     { label: 'Sosyal Yardım', text: 'Sosyal yardım başvurusu hakkında bilgi almak istiyorum.' }
 ];
 
-async function fetchInitialGreeting() {
-    // Show loading
-    const messagesContainer = document.getElementById('chatMessages');
-    const loadingDiv = document.createElement('div');
-    loadingDiv.className = 'message bot';
-    loadingDiv.id = 'loading';
-    const loadingContent = document.createElement('div');
-    loadingContent.className = 'message-content';
-    const loadingBubble = document.createElement('div');
-    loadingBubble.className = 'message-bubble loading';
-    loadingBubble.textContent = '⏳ Osman bağlanıyor...';
-    loadingContent.appendChild(loadingBubble);
-    loadingDiv.appendChild(loadingContent);
-    messagesContainer.appendChild(loadingDiv);
-
+async function initSession() {
     try {
-        const response = await fetch('/api/chat', {
+        await fetch('/api/chat', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -36,25 +36,8 @@ async function fetchInitialGreeting() {
                 user_id: currentUserId
             })
         });
-
-        const data = await response.json();
-        const loadingElement = document.getElementById('loading');
-        if (loadingElement) loadingElement.remove();
-
-        if (data.reply) {
-            addMessage(data.reply, false);
-            const choices = extractChoices(data.reply);
-            if (choices.length) {
-                renderChoiceReplies(choices);
-            } else {
-                renderQuickReplies();
-            }
-        }
     } catch (error) {
-        const loadingElement = document.getElementById('loading');
-        if (loadingElement) loadingElement.remove();
-        addMessage('❌ Bağlantı hatası.', false);
-        console.error('Error:', error);
+        console.error('Init error:', error);
     }
 }
 
@@ -84,6 +67,30 @@ function addMessage(text, isUser) {
 
     // Scroll to bottom
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function createLoadingBubble(text = '⏳ Cevap bekleniyor...') {
+    const loadingDiv = document.createElement('div');
+    loadingDiv.className = 'message bot';
+    loadingDiv.id = 'loading';
+    const loadingContent = document.createElement('div');
+    loadingContent.className = 'message-content';
+    const loadingBubble = document.createElement('div');
+    loadingBubble.className = 'message-bubble loading';
+    loadingBubble.textContent = text;
+    loadingContent.appendChild(loadingBubble);
+    loadingDiv.appendChild(loadingContent);
+    document.getElementById('chatMessages').appendChild(loadingDiv);
+
+    const messagesContainer = document.getElementById('chatMessages');
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function removeLoadingBubble() {
+    const loadingElement = document.getElementById('loading');
+    if (loadingElement) {
+        loadingElement.remove();
+    }
 }
 
 function renderQuickReplies(items = QUICK_REPLIES, autoSend = false) {
@@ -150,21 +157,7 @@ async function sendMessage() {
     input.value = '';
 
     // Show loading
-    const loadingDiv = document.createElement('div');
-    loadingDiv.className = 'message bot';
-    loadingDiv.id = 'loading';
-    const loadingContent = document.createElement('div');
-    loadingContent.className = 'message-content';
-    const loadingBubble = document.createElement('div');
-    loadingBubble.className = 'message-bubble loading';
-    loadingBubble.textContent = '⏳ Cevap bekleniyor...';
-    loadingContent.appendChild(loadingBubble);
-    loadingDiv.appendChild(loadingContent);
-    document.getElementById('chatMessages').appendChild(loadingDiv);
-
-    // Scroll to bottom
-    const messagesContainer = document.getElementById('chatMessages');
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    createLoadingBubble();
 
     try {
         const response = await fetch('/api/chat', {
@@ -185,18 +178,20 @@ async function sendMessage() {
         const data = await response.json();
 
         // Remove loading
-        const loadingElement = document.getElementById('loading');
-        if (loadingElement) {
-            loadingElement.remove();
-        }
+        removeLoadingBubble();
 
         // Add bot response
-        if (data.reply) {
-            addMessage(data.reply, false);
-            const choices = extractChoices(data.reply);
-            if (choices.length) {
-                renderChoiceReplies(choices);
+        if (data.reply !== undefined && data.reply !== null) {
+            if (data.reply) {
+                addMessage(data.reply, false);
+                const choices = extractChoices(data.reply);
+                if (choices.length) {
+                    renderChoiceReplies(choices);
+                } else {
+                    renderQuickReplies();
+                }
             } else {
+                // empty reply means no response is intended
                 renderQuickReplies();
             }
         } else {
@@ -205,10 +200,7 @@ async function sendMessage() {
         }
     } catch (error) {
         // Remove loading
-        const loadingElement = document.getElementById('loading');
-        if (loadingElement) {
-            loadingElement.remove();
-        }
+        removeLoadingBubble();
 
         addMessage('❌ Bir hata oluştu. Lütfen tekrar deneyin.', false);
         console.error('Error:', error);
@@ -232,13 +224,163 @@ function startNewChat() {
     if (confirm('Yeni bir konuşma başlatmak istediğinize emin misiniz? Mevcut konuşma silinecek.')) {
         currentUserId = 'user_' + Date.now();
         document.getElementById('chatMessages').innerHTML = '';
-        fetchInitialGreeting();
+        addMessage(WELCOME_MESSAGE, false);
+        const choices = extractChoices(WELCOME_MESSAGE);
+        if (choices.length) {
+            renderChoiceReplies(choices);
+        } else {
+            renderQuickReplies();
+        }
+        initSession();
+    }
+}
+
+function pickSupportedMimeType() {
+    const candidates = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/mpeg'
+    ];
+    for (const type of candidates) {
+        if (MediaRecorder.isTypeSupported(type)) {
+            return type;
+        }
+    }
+    return '';
+}
+
+async function toggleRecording() {
+    const button = document.getElementById('recordButton');
+    const timer = document.getElementById('recordTimer');
+    if (typeof MediaRecorder === 'undefined') {
+        addMessage('🎙️ Tarayıcı ses kaydını desteklemiyor.', false);
+        return;
+    }
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+        button.classList.remove('recording');
+        button.textContent = '🎙️';
+        if (recordingInterval) {
+            clearInterval(recordingInterval);
+            recordingInterval = null;
+        }
+        timer.textContent = '00:00';
+        return;
+    }
+
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mimeType = pickSupportedMimeType();
+        mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+        recordingChunks = [];
+
+        mediaRecorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) {
+                recordingChunks.push(event.data);
+            }
+        };
+
+        mediaRecorder.onstop = async () => {
+            clearTimeout(recordingTimer);
+            if (recordingInterval) {
+                clearInterval(recordingInterval);
+                recordingInterval = null;
+            }
+            timer.textContent = '00:00';
+            const blob = new Blob(recordingChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+            stream.getTracks().forEach(track => track.stop());
+            await sendAudio(blob);
+        };
+
+        mediaRecorder.start();
+        button.classList.add('recording');
+        button.textContent = '⏹️';
+        const startedAt = Date.now();
+        timer.textContent = '00:00';
+        recordingInterval = setInterval(() => {
+            const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+            const minutes = String(Math.floor(elapsed / 60)).padStart(2, '0');
+            const seconds = String(elapsed % 60).padStart(2, '0');
+            timer.textContent = `${minutes}:${seconds}`;
+        }, 500);
+        recordingTimer = setTimeout(() => {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+            }
+        }, MAX_RECORD_SECONDS * 1000);
+    } catch (error) {
+        console.error('Mic error:', error);
+        addMessage('🎙️ Mikrofon izni verilemedi.', false);
+    }
+}
+
+async function sendAudio(blob) {
+    const sendButton = document.querySelector('button[onclick="sendMessage()"]');
+    const input = document.getElementById('messageInput');
+    const recordButton = document.getElementById('recordButton');
+    input.disabled = true;
+    sendButton.disabled = true;
+    recordButton.disabled = true;
+
+    createLoadingBubble('⏳ Ses kaydı çözümleniyor...');
+
+    try {
+        const formData = new FormData();
+        const extension = (blob.type.split('/')[1] || 'webm').split(';')[0];
+        formData.append('file', blob, `recording.${extension}`);
+        formData.append('user_id', currentUserId);
+
+        const response = await fetch('/api/transcribe', {
+            method: 'POST',
+            body: formData
+        });
+
+        const data = await response.json();
+        removeLoadingBubble();
+
+        if (!response.ok || data.error) {
+            addMessage(data.error || '❌ Ses çözümlenemedi.', false);
+            renderQuickReplies();
+            return;
+        }
+
+        if (data.transcript) {
+            addMessage(data.transcript, true);
+        }
+
+        if (data.reply) {
+            addMessage(data.reply, false);
+            const choices = extractChoices(data.reply);
+            if (choices.length) {
+                renderChoiceReplies(choices);
+            } else {
+                renderQuickReplies();
+            }
+        }
+    } catch (error) {
+        removeLoadingBubble();
+        addMessage('❌ Ses kaydı gönderilemedi.', false);
+        console.error('Error:', error);
+        renderQuickReplies();
+    } finally {
+        input.disabled = false;
+        sendButton.disabled = false;
+        recordButton.disabled = false;
+        input.focus();
     }
 }
 
 // Sayfa yüklendiğinde hoş geldin mesajı
 window.onload = function () {
-    fetchInitialGreeting();
+    addMessage(WELCOME_MESSAGE, false);
+    const choices = extractChoices(WELCOME_MESSAGE);
+    if (choices.length) {
+        renderChoiceReplies(choices);
+    } else {
+        renderQuickReplies();
+    }
+    initSession();
     // Focus input
     document.getElementById('messageInput').focus();
 };

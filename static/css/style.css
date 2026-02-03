@@ -292,6 +292,37 @@ body::after {
     display: flex;
     gap: 10px;
     border-top: 1px solid var(--border);
+    align-items: center;
+}
+
+.record-btn {
+    width: 42px;
+    height: 42px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: white;
+    cursor: pointer;
+    font-size: 18px;
+    transition: all 0.2s ease;
+}
+
+.record-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.record-btn.recording {
+    background: #ffe4e1;
+    border-color: #d64545;
+    color: #d64545;
+    animation: pulse 1.2s ease-in-out infinite;
+}
+
+.record-timer {
+    font-size: 12px;
+    color: var(--muted);
+    min-width: 44px;
+    text-align: center;
 }
 
 #messageInput {
