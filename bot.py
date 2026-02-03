@@ -21,6 +21,9 @@ OSMAN_SYSTEM_PROMPT = (
     "Vatandaşla bir insan gibi, samimi bir dille ('komşum', 'hemşehrim', 'Değerli komşum') konuşursun. "
     "Asla yapay zeka olduğunu söylemezsin. Görevin vatandaşın derdini dinlemek ve eksik olan bilgilerini "
     "(Ad-Soyad, TC, Adres) sohbetin akışı içinde nazikçe almaktır. "
+    "Sadece Sultangazi Belediyesi hizmetleri ve belediyecilik konularındaki sorulara cevap ver. "
+    "Belediye ile ilgisi olmayan (hava durumu, genel kültür, yemek tarifi, siyaset, spor vb.) konularda "
+    "'Kusura bakmayın komşum, ben sadece belediyemizle ilgili konularda yardımcı olabiliyorum' diyerek nazikçe konuyu kapat. "
     "Mesajların kısa, öz ve çok samimi olmalı. Cevaplarını asla teknik veya robotik bir dille verme. "
     "\nMenü Seçenekleri (Vatandaş talep oluşturmak isterse veya yeni konuşma başlarsa bu seçenekleri nazikçe sun):\n"
     "1) Talep Oluşturma\n"
@@ -202,6 +205,32 @@ class WhatsAppBot:
         # En az bir adres anahtar kelimesi geçmeli VEYA metin yeterince uzun olmalı
         return bool(tokens & address_keywords) or len(text.strip()) > 20
 
+    def _is_valid_name(self, text: str) -> bool:
+        """
+        Basit isim doğrulama:
+        - Çok kısa olmamalı
+        - Sadece rakamlardan oluşmamalı
+        - XSS/Code injection karakterleri içermemeli
+        """
+        normalized = text.strip()
+        if len(normalized) < 3:
+            return False
+        
+        # Sadece rakam içeriyorsa geçersiz
+        if normalized.isdigit():
+            return False
+            
+        # Code injection şüphesi (basit kontrol)
+        dangerous_chars = {"<", ">", "/", "\\", "{", "}", ";", "(", ")"}
+        if any(ch in dangerous_chars for ch in normalized):
+            return False
+            
+        # En az bir harf içermeli
+        if not any(ch.isalpha() for ch in normalized):
+            return False
+            
+        return True
+
     def _normalize_text(self, text: str) -> str:
         lowered = text.casefold()
         lowered = lowered.replace("ı", "i").replace("ş", "s").replace("ğ", "g")
@@ -255,8 +284,8 @@ class WhatsAppBot:
                 return self._get_osman_response(normalized, "Vatandaş doğrudan bir mesaj yazdı. Yardımcı olacağını söyleyip adını ve soyadını sor.")
 
         if s.stage == "awaiting_name":
-            if len(normalized) < 3:
-                return self._get_osman_response(normalized, "Vatandaş ismini çok kısa yazdı veya yazmadı. Nazikçe adını soyadını tekrar sor.")
+            if not self._is_valid_name(normalized):
+                return self._get_osman_response(normalized, "Vatandaş ismini geçersiz, çok kısa veya sayısal/kod formatında yazdı. Nazikçe gerçek adını ve soyadını tekrar sor.")
             s.name = normalized
             s.stage = "awaiting_tc"
             return self._get_osman_response(normalized, f"Vatandaşın ismi {s.name}. Memnun olduğunu belirt ve işlemlere başlamak için TC numarasını nazikçe sor.")
