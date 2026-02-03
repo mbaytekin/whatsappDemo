@@ -72,10 +72,6 @@ async def chat_api(request: Request):
         user_message = data.get("message", "").strip()
         user_id = data.get("user_id", "web_user")
 
-        if not user_message:
-            logger.warning("Boş mesaj reddedildi. user_id=%s", user_id)
-            return JSONResponse({"error": "Mesaj boş olamaz"}, status_code=400)
-
         logger.info("Chat mesajı alındı. user_id=%s len=%s", user_id, len(user_message))
         reply = bot.handle_message(user_id=user_id, text=user_message)
 

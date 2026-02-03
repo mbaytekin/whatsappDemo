@@ -1,13 +1,6 @@
 let currentUserId = 'user_' + Date.now();
 
-const CATEGORY_PROMPT = [
-    'Sultangazi Belediyesi’ne hoş geldiniz.',
-    'Size nasıl yardımcı olabilirim?',
-    '',
-    '1) İstek/Şikâyet Bildir',
-    '2) Bilgi Al',
-    '3) Başvuru Sorgula'
-].join('\n');
+// CATEGORY_PROMPT removed for dynamic AI greeting.
 
 const QUICK_REPLIES = [
     { label: 'Çöp/Temizlik', text: 'Mahallemizde çöp alınmadı, konteynerler taşıyor.' },
@@ -17,30 +10,78 @@ const QUICK_REPLIES = [
     { label: 'Sosyal Yardım', text: 'Sosyal yardım başvurusu hakkında bilgi almak istiyorum.' }
 ];
 
+async function fetchInitialGreeting() {
+    // Show loading
+    const messagesContainer = document.getElementById('chatMessages');
+    const loadingDiv = document.createElement('div');
+    loadingDiv.className = 'message bot';
+    loadingDiv.id = 'loading';
+    const loadingContent = document.createElement('div');
+    loadingContent.className = 'message-content';
+    const loadingBubble = document.createElement('div');
+    loadingBubble.className = 'message-bubble loading';
+    loadingBubble.textContent = '⏳ Osman bağlanıyor...';
+    loadingContent.appendChild(loadingBubble);
+    loadingDiv.appendChild(loadingContent);
+    messagesContainer.appendChild(loadingDiv);
+
+    try {
+        const response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                message: '',
+                user_id: currentUserId
+            })
+        });
+
+        const data = await response.json();
+        const loadingElement = document.getElementById('loading');
+        if (loadingElement) loadingElement.remove();
+
+        if (data.reply) {
+            addMessage(data.reply, false);
+            const choices = extractChoices(data.reply);
+            if (choices.length) {
+                renderChoiceReplies(choices);
+            } else {
+                renderQuickReplies();
+            }
+        }
+    } catch (error) {
+        const loadingElement = document.getElementById('loading');
+        if (loadingElement) loadingElement.remove();
+        addMessage('❌ Bağlantı hatası.', false);
+        console.error('Error:', error);
+    }
+}
+
 function addMessage(text, isUser) {
     const messagesContainer = document.getElementById('chatMessages');
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${isUser ? 'user' : 'bot'}`;
-    
+
     const messageContent = document.createElement('div');
     messageContent.className = 'message-content';
-    
+
     const bubble = document.createElement('div');
     bubble.className = 'message-bubble';
     bubble.textContent = text;
-    
+
     const time = document.createElement('div');
     time.className = 'message-time';
-    time.textContent = new Date().toLocaleTimeString('tr-TR', { 
-        hour: '2-digit', 
-        minute: '2-digit' 
+    time.textContent = new Date().toLocaleTimeString('tr-TR', {
+        hour: '2-digit',
+        minute: '2-digit'
     });
-    
+
     messageContent.appendChild(bubble);
     messageContent.appendChild(time);
     messageDiv.appendChild(messageContent);
     messagesContainer.appendChild(messageDiv);
-    
+
     // Scroll to bottom
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
@@ -97,17 +138,17 @@ async function sendMessage() {
     const input = document.getElementById('messageInput');
     const sendButton = document.querySelector('button[onclick="sendMessage()"]');
     const message = input.value.trim();
-    
+
     if (!message) return;
-    
+
     // Disable input and button
     input.disabled = true;
     sendButton.disabled = true;
-    
+
     // Add user message
     addMessage(message, true);
     input.value = '';
-    
+
     // Show loading
     const loadingDiv = document.createElement('div');
     loadingDiv.className = 'message bot';
@@ -120,11 +161,11 @@ async function sendMessage() {
     loadingContent.appendChild(loadingBubble);
     loadingDiv.appendChild(loadingContent);
     document.getElementById('chatMessages').appendChild(loadingDiv);
-    
+
     // Scroll to bottom
     const messagesContainer = document.getElementById('chatMessages');
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
-    
+
     try {
         const response = await fetch('/api/chat', {
             method: 'POST',
@@ -136,19 +177,19 @@ async function sendMessage() {
                 user_id: currentUserId
             })
         });
-        
+
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
-        
+
         const data = await response.json();
-        
+
         // Remove loading
         const loadingElement = document.getElementById('loading');
         if (loadingElement) {
             loadingElement.remove();
         }
-        
+
         // Add bot response
         if (data.reply) {
             addMessage(data.reply, false);
@@ -168,7 +209,7 @@ async function sendMessage() {
         if (loadingElement) {
             loadingElement.remove();
         }
-        
+
         addMessage('❌ Bir hata oluştu. Lütfen tekrar deneyin.', false);
         console.error('Error:', error);
         renderQuickReplies();
@@ -191,16 +232,13 @@ function startNewChat() {
     if (confirm('Yeni bir konuşma başlatmak istediğinize emin misiniz? Mevcut konuşma silinecek.')) {
         currentUserId = 'user_' + Date.now();
         document.getElementById('chatMessages').innerHTML = '';
-        addMessage(CATEGORY_PROMPT, false);
-        renderChoiceReplies(extractChoices(CATEGORY_PROMPT));
+        fetchInitialGreeting();
     }
 }
 
 // Sayfa yüklendiğinde hoş geldin mesajı
-window.onload = function() {
-    addMessage(CATEGORY_PROMPT, false);
-    renderChoiceReplies(extractChoices(CATEGORY_PROMPT));
-    
+window.onload = function () {
+    fetchInitialGreeting();
     // Focus input
     document.getElementById('messageInput').focus();
 };
