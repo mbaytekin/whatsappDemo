@@ -17,26 +17,23 @@ CATEGORY_OPTIONS = (
 )
 
 HUMAN_WELCOME_MESSAGE = (
-    "Merhaba komşum, ben Osman. Sultangazi Belediyesi'nden yazıyorum. "
-    "Memnuniyetle yardımcı olurum. Aşağıdaki seçeneklerden birini yazabilir misiniz?\n\n"
-    f"{CATEGORY_OPTIONS}"
+    "Merhaba komşum, ben Osman. Sultangazi Belediyesi'nden yazıyorum. Memnuniyetle yardımcı olurum.\n\n"
+    "Bu konularda yardımcı olabilirim:\n\n"
+    f"{CATEGORY_OPTIONS}\n\n"
+    "İsteğinizi veya şikayetinizi doğrudan yazabilirsiniz."
 )
 
 OSMAN_SYSTEM_PROMPT = (
     "Sen Sultangazi Belediyesi'nde çalışan Osman isimli, çok yardımsever, samimi ve nazik bir personelsin. "
     "Vatandaşla bir insan gibi, samimi bir dille ('komşum', 'hemşehrim', 'Değerli komşum') konuşursun. "
-    "Asla yapay zeka olduğunu söylemezsin. Görevin vatandaşın derdini dinlemek ve eksik olan bilgilerini "
-    "(Ad-Soyad, TC, Adres) sohbetin akışı içinde nazikçe almaktır. "
-    "Sadece Sultangazi Belediyesi hizmetleri ve belediyecilik konularındaki sorulara cevap ver. "
-    "Belediye ile ilgisi olmayan (hava durumu, genel kültür, yemek tarifi, siyaset, spor vb.) konularda "
-    "'Kusura bakmayın komşum, ben sadece belediyemizle ilgili konularda yardımcı olabiliyorum' diyerek nazikçe konuyu kapat. "
-    "Mesajların kısa, öz ve çok samimi olmalı. Cevaplarını asla teknik veya robotik bir dille verme. "
-    "\nMenü Seçenekleri (Vatandaş talep oluşturmak isterse veya yeni konuşma başlarsa bu seçenekleri nazikçe sun):\n"
-    "1) Talep Oluşturma\n"
-    "2) Eğitim ve Kurs Başvuru\n"
-    "3) Yardımlar\n"
-    "4) Millet Kütüphaneleri Randevu Alma\n"
-    "5) Nöbetçi Eczaneler"
+    "Asla yapay zeka olduğunu söylemezsin. "
+    "Talep alırken adım adım ilerle: (1) Önce ad soyad, (2) sonra TC kimlik no, (3) gerekiyorsa mahalle/sokak gibi adres bilgileri, "
+    "(4) en sonda talebin açık ve net bir şekilde yazılmasını iste. Bu sırayı değiştirme. "
+    "Vatandaş beklenen bilgiyi vermediğinde ASLA 'Anladım' deme; o anda neye ihtiyaç duyulduğunu net söyle. "
+    "Sadece belediyenin yardımcı olduğu konularda yardımcı ol: Talep oluşturma, Eğitim/Kurs, Yardımlar, Millet Kütüphanesi randevu, Nöbetçi eczaneler. "
+    "Belediye hizmeti dışındaki veya internetten/ sistemden bulamayacağın bilgiler için nazikçe 'Bu konuda maalesef hizmet veremiyorum' de; "
+    "belediyenin sunduğu hizmetlere yönlendir. Örn: Millet Kütüphanesi konumu gibi bazı bilgiler verilebilir, ama menüdeki diğer bazı seçenekler için bilgi yoksa 'bu konuda hizmet veremiyorum' de. "
+    "Mesajların kısa, öz ve samimi olsun."
 )
 
 
@@ -64,9 +61,9 @@ class WhatsAppBot:
     ile simüle ediyoruz.
     """
 
-    def __init__(self, router: TopicRouter, session_ttl_minutes: int = 30):
+    def __init__(self, router: TopicRouter, session_ttl_seconds: int = 30):
         self.router = router
-        self.ttl = timedelta(minutes=session_ttl_minutes)
+        self.ttl = timedelta(seconds=session_ttl_seconds)
         self.sessions: Dict[str, Session] = {}
         # Gemini istemcisini router üzerinden veya doğrudan alıyoruz
         from google import genai
@@ -169,6 +166,9 @@ class WhatsAppBot:
             "mahalle",
             "cadde",
             "lamba",
+            "lambasi",
+            "yanmiyor",
+            "yanmadi",
             "aydinlatma",
             "zabita",
             "gurultu",
@@ -215,30 +215,81 @@ class WhatsAppBot:
         # En az bir adres anahtar kelimesi geçmeli VEYA metin yeterince uzun olmalı
         return bool(tokens & address_keywords) or len(text.strip()) > 20
 
+    def _is_out_of_scope_or_abuse(self, text: str) -> bool:
+        """Para isteği, yapay zeka kimlik sorgulama, hakaret vb. — talep akışına sokma, kapsamda kal."""
+        normalized = self._normalize_text(text)
+        if not normalized or len(normalized) < 4:
+            return False
+        # Para / ödeme istekleri
+        money_related = (
+            "tl yolla", "tl gonder", "tl gonderin", "para yolla", "para gonder", "havale", "eft", "iban",
+            "bin tl", "bintl", "lira yolla", "acil para", "para lazim", "borc", "odeme", "yatir", "gonder bana",
+            "yolla bana", "gonder bana", "50bin", "50 bin", "100bin", "1000tl"
+        )
+        for phrase in money_related:
+            if phrase in normalized:
+                return True
+        # Rakam + tl/yolla (örn. 50bin tl, 50bintl, 1000 tl yolla)
+        if re.search(r"\d+\s*bin\s*tl", normalized) or re.search(r"\d+bintl", normalized):
+            return True
+        if re.search(r"\d+\s*tl\s*yolla", normalized) or re.search(r"yolla\s*\d+", normalized):
+            return True
+        # Yapay zeka / bot / kimlik sorgulama
+        identity_probe = (
+            "yapay zeka", "yapayzeka", "robot musun", "bot musun", "gercek kimlik", "gercek kmiilgini",
+            "kimsin", "aslinda ne", "aslinda nesin", "ai misin", "yapay zeka misin", "soylemiyorsun"
+        )
+        tokens = set(normalized.split())
+        probe_words = {"yapay", "zeka", "robot", "bot", "kimlik", "kimsin", "aslinda", "ai", "yapayzeka"}
+        if tokens & probe_words:
+            return True
+        for phrase in identity_probe:
+            if phrase in normalized:
+                return True
+        return False
+
+    def _looks_like_confusion_or_rejection(self, text: str) -> bool:
+        """Soru, red, karışıklık ifadeleri — bunları asla ad/TC/talep olarak kabul etme."""
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return False
+        confusion = {
+            "neyi", "neden", "nasil", "ne", "niye", "anladin", "anlamadim", "anlamiyorum",
+            "diyorsun", "yapiyorsun", "istemiyorum", "hayir", "olmaz", "yok", "gerek yok",
+            "ne yapmak", "ne istiyorsun", "ne diyorsun", "secmedim", "secmedim ki",
+            "komsum", "komsum", "selam", "merhaba",
+        }
+        tokens = set(normalized.split())
+        if tokens & confusion:
+            return True
+        for phrase in ("ne diyorsun", "neyi anladin", "ne yapmak istedigimi", "anlamadin ki"):
+            if phrase in normalized:
+                return True
+        return False
+
     def _is_valid_name(self, text: str) -> bool:
         """
-        Basit isim doğrulama:
-        - Çok kısa olmamalı
-        - Sadece rakamlardan oluşmamalı
-        - XSS/Code injection karakterleri içermemeli
+        İsim doğrulama: sadece ad-soyad formatı kabul.
+        Soru/red/karışıklık veya çok uzun/cümle ise reddet.
         """
         normalized = text.strip()
         if len(normalized) < 3:
             return False
-        
-        # Sadece rakam içeriyorsa geçersiz
+        if self._looks_like_confusion_or_rejection(text):
+            return False
+        # Çok uzun veya çok kelime = muhtemelen cümle, isim değil (ad soyad genelde 2-4 kelime)
+        words = normalized.split()
+        if len(words) > 4:
+            return False
+        if len(normalized) > 40:
+            return False
         if normalized.isdigit():
             return False
-            
-        # Code injection şüphesi (basit kontrol)
         dangerous_chars = {"<", ">", "/", "\\", "{", "}", ";", "(", ")"}
         if any(ch in dangerous_chars for ch in normalized):
             return False
-            
-        # En az bir harf içermeli
         if not any(ch.isalpha() for ch in normalized):
             return False
-            
         return True
 
     def _normalize_text(self, text: str) -> str:
@@ -330,52 +381,114 @@ class WhatsAppBot:
         s.last_seen = now
         normalized = text.strip()
 
-        # Kategori seçimi bekleniyorsa
+        # Kategori/talep aşaması — kullanıcı sorununu anlatırsa (sokak lambası, çöp vb.) doğrudan talep olarak al, menü seçtirme
         if s.stage == "awaiting_category":
             if not normalized:
-                return self._get_osman_response("Merhaba", "Vatandaş boş mesaj gönderdi. Tekrar yardımcı olmayı teklif et ve menüyü hatırplat.")
+                return self._get_osman_response(
+                    "",
+                    "Vatandaş boş mesaj gönderdi. Nazikçe nasıl yardımcı olabileceğini sor, istek/şikayet yazabileceğini belirt. Menü numarası isteme."
+                )
             choice = self._parse_category_choice(text)
             if choice == "request":
                 if not self._is_category_only(text) and self._looks_like_municipal(text):
                     s.issue = normalized
                 s.stage = "awaiting_name"
-                return "Geçmiş olsun komşum. İşlemi başlatmak için adınızı ve soyadınızı alabilir miyim?"
-            elif choice in {"education", "social_aid", "library", "pharmacy"}:
+                return (
+                    "Size yardımcı olacağım komşum. Önce adınız ve soyadınız, sonra TC, "
+                    "gerekirse mahalle/sokak gibi adres bilgileri, en sonda da talebinizi açık yazmanızı isteyeceğim. "
+                    "Başlayalım: Adınız ve soyadınız?"
+                )
+            if choice in {"education", "social_aid", "library", "pharmacy"}:
                 return (
                     "Bu hizmet şu an hazırlık aşamasındadır. En kısa sürede Osman olarak size bu konuda da hizmet vereceğim.\n\n"
-                    f"Şu an '1) Talep Oluşturma' seçeneği üzerinden tüm istek ve şikayetlerinizi iletebilirsiniz.\n\n"
-                    f"{CATEGORY_OPTIONS}"
+                    "İstek ve şikayetlerinizi doğrudan yazabilirsiniz (ör: sokak lambası, çöp, yol)."
                 )
-            else:
-                # Seçim değilse, direkt talep olarak işle
-                if self._looks_like_municipal(text):
-                    s.issue = normalized
+            # Kapsam dışı / kötüye kullanım: para isteği, yapay zeka sorgulama vb. — talep başlatma
+            if self._is_out_of_scope_or_abuse(text):
+                return (
+                    "Bu konuda yardımcı olamıyorum komşum. Ben sadece belediyemizin hizmetleriyle ilgili konularda "
+                    "yardımcı olabiliyorum: talep oluşturma, eğitim/kurs, yardımlar, kütüphane randevusu, nöbetçi eczaneler. "
+                    "Bu konularda bir isteğiniz varsa yazabilirsiniz."
+                )
+            # Önce belediye talebi mi anla — sokak lambası, çöp, yol vb. ise doğrudan talep olarak al, menü seçtirme
+            if self._looks_like_municipal(text):
+                s.issue = normalized  # hatırlatma için sakla, nihai talep son adımda alınacak
                 s.stage = "awaiting_name"
-                return "Anladım komşum, yardımcı olayım. Önce adınızı ve soyadınızı alabilir miyim?"
+                return (
+                    "Size yardımcı olacağım komşum. Adım adım ilerleyeceğiz: önce adınız soyadınız, "
+                    "sonra TC kimlik numaranız, ardından adres bilgileriniz (mahalle, sokak vb.), "
+                    "en son da talebinizi açıkça yazmanızı isteyeceğim. Başlayalım: Adınız ve soyadınız?"
+                )
+            # Selam / belirsiz: ne yapabileceğini söyle, numara zorunlu değil
+            if self._looks_like_confusion_or_rejection(text):
+                return self._get_osman_response(
+                    normalized,
+                    "Vatandaş selamlaştı veya genel bir şey yazdı. Samimi karşıla, nasıl yardımcı olabileceğini kısaca söyle. "
+                    "İstek ve şikayetlerini doğrudan yazabileceğini belirt (sokak lambası, çöp, yol vb.). Numara yazmasını isteme."
+                )
+            return self._get_osman_response(
+                normalized,
+                "Vatandaşın ne istediği tam belli değil. Nazikçe belediye ile ilgili istek veya şikayetini yazabileceğini söyle "
+                "(ör: sokak lambası yanmıyor, çöp alınmadı). Numara seçtirme."
+            )
 
         if s.stage == "awaiting_name":
+            if self._is_out_of_scope_or_abuse(text):
+                s.stage = "awaiting_category"
+                return (
+                    "Bu konuda yardımcı olamıyorum komşum. Sadece belediye hizmetleriyle ilgili taleplerde yardımcı olabiliyorum. "
+                    "Belediye hizmetleri için isteğinizi yazabilirsiniz."
+                )
             if not self._is_valid_name(normalized):
-                return self._get_osman_response(normalized, "Vatandaş ismini geçersiz, çok kısa veya sayısal/kod formatında yazdı. Nazikçe gerçek adını ve soyadını tekrar sor.")
+                return self._get_osman_response(
+                    normalized,
+                    "Vatandaş ad-soyad yerine başka bir şey yazdı (soru, red, cümle). 'Anladım' deme. "
+                    "Nazikçe sadece ad ve soyad yazmasını iste (ör: Ahmet Yılmaz)."
+                )
             s.name = normalized
             s.stage = "awaiting_tc"
-            return self._get_osman_response(normalized, f"Vatandaşın ismi {s.name}. Memnun olduğunu belirt ve işlemlere başlamak için TC numarasını nazikçe sor.")
+            return self._get_osman_response(
+                normalized,
+                f"Vatandaş adını soyadını yazdı: {s.name}. Kısa bir memnuniyet ifadesiyle 11 haneli TC kimlik numarasını nazikçe sor."
+            )
 
         if s.stage == "awaiting_tc":
+            if self._is_out_of_scope_or_abuse(text):
+                s.stage = "awaiting_category"
+                return (
+                    "Bu konuda yardımcı olamıyorum komşum. Sadece belediye hizmetleriyle ilgili taleplerde yardımcı olabiliyorum. "
+                    "Belediye hizmetleri için isteğinizi yazabilirsiniz."
+                )
             tc_clean = re.sub(r"\D", "", normalized)
-            if len(tc_clean) != 11:
-                return self._get_osman_response(normalized, "Vatandaş geçersiz bir TC yazdı. 11 haneli TC numarasını tekrar nazikçe sor.")
-            s.tc = tc_clean
-            s.stage = "awaiting_address"
-            return self._get_osman_response(normalized, "TC numarasını aldın. Şimdi işlemin yapılacağı adresi veya konumu nazikçe sor.")
+            if len(tc_clean) == 11:
+                s.tc = tc_clean
+                s.stage = "awaiting_address"
+                return self._get_osman_response(
+                    normalized,
+                    "TC numarasını aldın. Şimdi mahalle, sokak, bina no gibi adres bilgilerini nazikçe sor."
+                )
+            if self._looks_like_confusion_or_rejection(normalized):
+                return self._get_osman_response(
+                    normalized,
+                    "Vatandaş TC yazmadı; soru veya red ifadesi kullandı. 'Anladım' veya 'geçersiz' deme. "
+                    "Nazikçe işleme devam için 11 haneli TC kimlik numarasını (sadece rakam) yazması gerektiğini söyle."
+                )
+            return self._get_osman_response(
+                normalized,
+                "Vatandaş 11 haneli TC formatında yazmadı. 'Anladım' deme. "
+                "Nazikçe 11 haneli TC kimlik numarasını (sadece rakam) yazmasını iste."
+            )
 
         if s.stage == "awaiting_address":
             if not self._is_valid_address(normalized):
                 return self._get_osman_response(normalized, "Adres bilgisi yetersiz. Mahalle, sokak gibi detayları içeren adresi tekrar sor.")
             s.address = normalized
-            if s.issue:
-                return self._finalize_request(s, s.issue)
+            # Her zaman son adım: talebi açık ve net bir şekilde yazmasını iste
             s.stage = "awaiting_issue"
-            return "Adres bilgisini aldım. Şimdi talebinizi kısaca yazabilir misiniz?"
+            return (
+                "Adres bilgisini aldım komşum. Son adım: Lütfen talebinizi açık ve net bir şekilde yazar mısınız? "
+                "(Örn: Sokak lambaları yanmıyor, Mahallemizde çöp toplanmadı.)"
+            )
 
         if s.stage == "awaiting_issue":
             return self._finalize_request(s, normalized)
@@ -387,12 +500,12 @@ class WhatsAppBot:
             normalized_follow = self._normalize_text(text)
             if normalized_follow in {"evet", "var", "tabii", "peki", "olur"}:
                 s.stage = "awaiting_category"
-                return f"Elbette, şu seçeneklerden birini yazabilirsiniz:\n\n{CATEGORY_OPTIONS}"
+                return "Elbette komşum. Yeni bir istek veya şikayetinizi yazabilirsiniz."
             if self._looks_like_municipal(text):
                 s.issue = normalized
                 s.stage = "awaiting_name"
                 return self._get_osman_response(normalized, "Yeni bir talep var. Nazikçe adını ve soyadını sor.")
             s.stage = "awaiting_category"
-            return f"{CATEGORY_OPTIONS}\n\nLütfen bir seçenek yazın."
+            return "Başka bir isteğiniz varsa doğrudan yazabilirsiniz."
 
-        return f"{CATEGORY_OPTIONS}\n\nLütfen bir seçenek yazın."
+        return "Nasıl yardımcı olabilirim? İsteğinizi veya şikayetinizi yazabilirsiniz."

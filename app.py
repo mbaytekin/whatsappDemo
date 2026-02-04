@@ -310,13 +310,18 @@ async def twilio_whatsapp(request: Request):
     from_number = (form.get("From") or "unknown").strip()
     num_media = int(form.get("NumMedia") or 0)
 
-    logger.info("Twilio mesajı alındı. from=%s len=%s", from_number, len(incoming_msg))
+    logger.info("Twilio mesajı alındı. from=%s len=%s num_media=%s", from_number, len(incoming_msg), num_media)
     reply = bot.handle_message(user_id=from_number, text=incoming_msg)
 
     if num_media > 0:
         media_url = (form.get("MediaUrl0") or "").strip()
         media_type = (form.get("MediaContentType0") or "").strip()
-        if media_url and media_type.startswith("audio/"):
+        logger.info("Medya mesajı alındı. Type: %s, URL: %s", media_type, media_url)
+        
+        # WhatsApp bazen kabuk (ogg) formatını video/ogg veya application/ogg olarak gönderebilir
+        is_audio = media_type.startswith("audio/") or "ogg" in media_type.lower()
+        
+        if media_url and is_audio:
             if WhisperModel is None:
                 reply = "Ses mesajı alındı ancak transkripsiyon için faster-whisper kurulu değil."
             elif requests is None:
@@ -325,31 +330,52 @@ async def twilio_whatsapp(request: Request):
                 sid = os.getenv("TWILIO_ACCOUNT_SID")
                 token = os.getenv("TWILIO_AUTH_TOKEN")
                 if not sid or not token:
+                    logger.warning("Twilio credentials missing in environment variables!")
                     reply = "Ses mesajı alındı ancak Twilio erişim bilgileri eksik."
                 else:
                     temp_path: Optional[Path] = None
                     try:
-                        resp = requests.get(media_url, auth=(sid, token), timeout=20)
+                        logger.info("Twilio ses dosyası indiriliyor: %s", media_url)
+                        resp = requests.get(media_url, auth=(sid, token), timeout=30)
                         resp.raise_for_status()
-                        suffix = Path(media_url).suffix or ".wav"
+                        
+                        suffix = Path(media_url).suffix or ".ogg"
+                        if not suffix or len(suffix) > 5: suffix = ".ogg"
+                        
                         temp_dir = Path(os.getenv("TMPDIR", tempfile.gettempdir()))
                         temp_dir.mkdir(parents=True, exist_ok=True)
+                        
                         with tempfile.NamedTemporaryFile(dir=temp_dir, suffix=suffix, delete=False) as tmp:
                             temp_path = Path(tmp.name)
                             tmp.write(resp.content)
+                            
+                        logger.info("Ses dosyası kaydedildi: %s", temp_path)
+                        
                         max_seconds = int(os.getenv("WHISPER_MAX_SECONDS", "90"))
                         duration = _probe_duration_seconds(temp_path)
+                        
                         if duration is not None and duration > max_seconds:
+                            logger.warning("Ses mesajı süresi çok uzun: %s sn", duration)
                             reply = f"Ses mesajı {max_seconds} saniyeyi aşıyor."
                         else:
-                            transcript = _transcribe_audio(temp_path)
+                            logger.info("Transkripsiyon başlıyor...")
+                            # Transkripsiyonu thread pool'da çalıştır (blocking olmasın)
+                            transcript = await asyncio.to_thread(_transcribe_audio, temp_path)
+                            logger.info("Transkripsiyon bitti. Sonuç: %s", transcript)
+                            
                             if transcript:
-                                reply = bot.handle_message(user_id=from_number, text=transcript)
+                                try:
+                                    reply = bot.handle_message(user_id=from_number, text=transcript)
+                                    logger.info("Bot yanıtı oluşturuldu. Yanıt: %s (uzunluk: %s)", reply[:100] if reply else "BOŞ", len(reply) if reply else 0)
+                                except Exception as e:
+                                    logger.exception("Bot handle_message hatası: %s", e)
+                                    reply = "Ses mesajınız işlenirken bir sorun oluştu. Lütfen tekrar deneyin."
                             else:
-                                reply = "Ses mesajı alındı ancak transkript üretilemedi."
-                    except Exception:
-                        logger.exception("Twilio ses indirimi/transkripsiyonu başarısız.")
-                        reply = "Ses mesajı alındı ancak işlenirken hata oluştu."
+                                logger.warning("Transkript boş geldi.")
+                                reply = "Ses mesajı alındı ancak içeriği anlaşılamadı."
+                    except Exception as e:
+                        logger.exception("Twilio ses işleme hatası: %s", e)
+                        reply = "Ses mesajı işlenirken teknik bir sorun oluştu."
                     finally:
                         if temp_path and temp_path.exists():
                             try:
@@ -358,7 +384,13 @@ async def twilio_whatsapp(request: Request):
                                 logger.warning("Geçici dosya silinemedi: %s", temp_path)
 
     resp = MessagingResponse()
-    if reply:
+    if reply and isinstance(reply, str) and reply.strip():
         resp.message(reply)
+        logger.info("Twilio yanıtı hazırlandı ve gönderiliyor. Mesaj uzunluğu: %s", len(reply))
+    else:
+        logger.warning("Bot yanıtı boş, None veya geçersiz, mesaj gönderilmedi. reply=%s (type: %s)", repr(reply), type(reply).__name__ if reply is not None else "None")
 
-    return PlainTextResponse(str(resp), media_type="application/xml")
+    xml_response = str(resp)
+    logger.info("Twilio XML yanıtı (tam içerik): %s", xml_response)
+    logger.info("Twilio yanıtı gönderiliyor. Status: 200 OK")
+    return PlainTextResponse(xml_response, media_type="application/xml", status_code=200)
