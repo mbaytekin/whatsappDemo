@@ -135,7 +135,7 @@ def _transcribe_audio(file_path: Path) -> str:
     segments, _info = model.transcribe(
         str(file_path),
         language="tr",
-        vad_filter=True,
+        vad_filter=False,  # onnxruntime DLL hatası nedeniyle geçici olarak devre dışı
         beam_size=5,
     )
     texts = [seg.text.strip() for seg in segments if seg.text and seg.text.strip()]
@@ -203,20 +203,41 @@ async def transcribe_api(
     file: UploadFile = File(...),
     user_id: str = Form("web_user"),
 ):
-    """Ses dosyasını transkripte çevir ve bot cevabını döndür."""
-    if WhisperModel is None:
-        return JSONResponse({"error": "faster-whisper yüklü değil."}, status_code=500)
+    logger.info("Transcribe isteği alındı. Content-Type: %s, Filename: %s", file.content_type, file.filename)
+
+    # Content-Type'dan parametreleri (codecs=opus vb.) ayıklayıp temizleyelim
+    content_type_clean = "unknown"
+    if file.content_type:
+        content_type_clean = file.content_type.split(';')[0].strip().lower()
 
     allowed_types = {
         "audio/webm",
         "audio/wav",
         "audio/x-wav",
         "audio/mpeg",
+        "audio/mp3",
         "audio/mp4",
         "audio/ogg",
+        "video/webm",
+        "application/octet-stream",
     }
-    if file.content_type and file.content_type not in allowed_types:
-        return JSONResponse({"error": "Desteklenmeyen ses formatı."}, status_code=400)
+    
+    # Dosya uzantısı kontrolü için liste
+    allowed_extensions = {".webm", ".wav", ".mp3", ".ogg", ".mp4", ".mpeg", ".m4a"}
+
+    is_allowed = False
+    if content_type_clean in allowed_types or content_type_clean.startswith("audio/"):
+        is_allowed = True
+    
+    # Tip eşleşmezse uzantıya bak
+    if not is_allowed and file.filename:
+        if Path(file.filename).suffix.lower() in allowed_extensions:
+            is_allowed = True
+            logger.info("Dosya uzantısına göre izin verildi.")
+
+    if not is_allowed:
+        logger.warning("Desteklenmeyen format: %s", file.content_type)
+        return JSONResponse({"error": f"Desteklenmeyen ses formatı: {file.content_type}"}, status_code=400)
 
     max_mb = float(os.getenv("WHISPER_MAX_MB", "15"))
     max_bytes = int(max_mb * 1024 * 1024)
@@ -225,23 +246,46 @@ async def transcribe_api(
         return JSONResponse({"error": "Ses kaydı çok büyük."}, status_code=400)
 
     temp_path: Optional[Path] = None
+    converted_path: Optional[Path] = None
     try:
         temp_dir = Path(os.getenv("TMPDIR", tempfile.gettempdir()))
         temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Gelen dosyayı geçici olarak kaydet
         suffix = Path(file.filename or "").suffix or ".webm"
         with tempfile.NamedTemporaryFile(dir=temp_dir, suffix=suffix, delete=False) as tmp:
             temp_path = Path(tmp.name)
             tmp.write(contents)
 
+        # Süre kontrolü
         max_seconds = int(os.getenv("WHISPER_MAX_SECONDS", "90"))
         duration = _probe_duration_seconds(temp_path)
         if duration is not None and duration > max_seconds:
             return JSONResponse({"error": f"Ses kaydı {max_seconds} saniyeyi aşıyor."}, status_code=400)
 
-        # Transcription'ı thread pool'da çalıştır (blocking olmasın)
+        # TRANSCODING: Her ihtimale karşı dosyayı Whisper'ın en sevdiği format olan 16kHz WAV'a çevirelim
+        converted_path = temp_path.with_suffix(".converted.wav")
+        logger.info("Dosya WAV formatına dönüştürülüyor...")
+        
+        convert_cmd = [
+            "ffmpeg", "-y", "-i", str(temp_path),
+            "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+            str(converted_path)
+        ]
+        
+        result = subprocess.run(convert_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.error("FFmpeg dönüştürme hatası: %s", result.stderr)
+            # Eğer çevirme başarısız olursa orijinal dosya ile devam etmeyi dene
+            process_path = temp_path
+        else:
+            process_path = converted_path
+
+        # Transcription
         logger.info("Ses transkripsiyon başlıyor...")
-        transcript = await asyncio.to_thread(_transcribe_audio, temp_path)
+        transcript = await asyncio.to_thread(_transcribe_audio, process_path)
         logger.info("Ses transkripsiyon tamamlandı: %s karakter", len(transcript) if transcript else 0)
+        
         if not transcript:
             return JSONResponse({"error": "Transkript boş geldi."}, status_code=400)
 
@@ -251,11 +295,12 @@ async def transcribe_api(
         logger.exception("transcribe_api hata verdi.")
         return JSONResponse({"error": str(e)}, status_code=500)
     finally:
-        if temp_path and temp_path.exists():
-            try:
-                temp_path.unlink()
-            except OSError:
-                logger.warning("Geçici dosya silinemedi: %s", temp_path)
+        for p in [temp_path, converted_path]:
+            if p and p.exists():
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
 
 
 @app.post("/twilio/whatsapp")
