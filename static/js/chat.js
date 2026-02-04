@@ -6,14 +6,17 @@ let recordingInterval = null;
 const MAX_RECORD_SECONDS = 90;
 
 const WELCOME_MESSAGE = [
-    'Merhaba komşum, ben Osman. Sultangazi Belediyesi\'nden yazıyorum.',
-    'Memnuniyetle yardımcı olurum. Aşağıdaki seçeneklerden birini yazabilir misiniz?',
+    'Selam komşum, ben Osman. Sultangazi Belediyesi\'nden yazıyorum. Sizlere yardımcı olmak için buradayım.',
+    '',
+    'Şu başlıklarda yardımcı olabilirim:',
     '',
     '1) Talep Oluşturma',
     '2) Eğitim ve Kurs Başvuru',
     '3) Yardımlar',
     '4) Millet Kütüphaneleri Randevu Alma',
-    '5) Nöbetçi Eczaneler'
+    '5) Nöbetçi Eczaneler',
+    '',
+    'İsteğinizi veya şikayetinizi doğrudan yazabilirsiniz.'
 ].join('\n');
 
 const QUICK_REPLIES = [

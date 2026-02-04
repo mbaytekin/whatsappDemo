@@ -17,16 +17,18 @@ CATEGORY_OPTIONS = (
 )
 
 HUMAN_WELCOME_MESSAGE = (
-    "Merhaba komşum, ben Osman. Sultangazi Belediyesi'nden yazıyorum. Memnuniyetle yardımcı olurum.\n\n"
-    "Bu konularda yardımcı olabilirim:\n\n"
+    "Selam komşum, ben Osman. Sultangazi Belediyesi'nden yazıyorum. Sizlere yardımcı olmak için buradayım.\n\n"
+    "Şu başlıklarda yardımcı olabilirim:\n\n"
     f"{CATEGORY_OPTIONS}\n\n"
     "İsteğinizi veya şikayetinizi doğrudan yazabilirsiniz."
 )
 
 OSMAN_SYSTEM_PROMPT = (
     "Sen Sultangazi Belediyesi'nde çalışan Osman isimli, çok yardımsever, samimi ve nazik bir personelsin. "
-    "Vatandaşla bir insan gibi, samimi bir dille ('komşum', 'hemşehrim', 'Değerli komşum') konuşursun. "
+    "Vatandaşla bir insan gibi, samimi bir dille ('komşum', 'Değerli komşum') konuşursun. "
     "Asla yapay zeka olduğunu söylemezsin. "
+    "Vatandaşın soyadını asla tekrar etme; sadece adıyla hitap et. "
+    "Memnuniyet ifadelerinde 'Sizlere yardımcı olmak için buradayım' gibi bir dil kullan; tek tip, tutarlı olsun. "
     "Talep alırken adım adım ilerle: (1) Önce ad soyad, (2) sonra TC kimlik no, (3) gerekiyorsa mahalle/sokak gibi adres bilgileri, "
     "(4) en sonda talebin açık ve net bir şekilde yazılmasını iste. Bu sırayı değiştirme. "
     "Vatandaş beklenen bilgiyi vermediğinde ASLA 'Anladım' deme; o anda neye ihtiyaç duyulduğunu net söyle. "
@@ -61,9 +63,10 @@ class WhatsAppBot:
     ile simüle ediyoruz.
     """
 
-    def __init__(self, router: TopicRouter, session_ttl_seconds: int = 30):
+    def __init__(self, router: TopicRouter, session_ttl_seconds: int = 30, inactivity_timeout_seconds: int = 60):
         self.router = router
         self.ttl = timedelta(seconds=session_ttl_seconds)
+        self.inactivity_timeout = timedelta(seconds=inactivity_timeout_seconds)
         self.sessions: Dict[str, Session] = {}
         # Gemini istemcisini router üzerinden veya doğrudan alıyoruz
         from google import genai
@@ -204,16 +207,24 @@ class WhatsAppBot:
         normalized = self._normalize_text(text)
         if not normalized:
             return False
-            
-        address_keywords = {
-            "mahalle", "mah", "sokak", "sok", "cadde", "cad", "bulvar", "blv",
-            "no", "numara", "daire", "kat", "blok", "sitesi", "apartmani",
-            "mevkii", "karsisi", "yani", "arkasi"
-        }
-        
+
         tokens = set(normalized.split())
-        # En az bir adres anahtar kelimesi geçmeli VEYA metin yeterince uzun olmalı
-        return bool(tokens & address_keywords) or len(text.strip()) > 20
+        area_tokens = {"mahalle", "mahallesi", "mah"}
+        street_tokens = {"sokak", "sokagi", "sok", "cadde", "caddesi", "cad", "bulvar", "bulvari", "blv"}
+        number_tokens = {"no", "numara", "daire", "kat", "blok"}
+
+        has_area = bool(tokens & area_tokens)
+        has_street = bool(tokens & street_tokens)
+        has_number = bool(re.search(r"\b\d{1,4}\b", normalized)) and bool(tokens & number_tokens)
+
+        # En az iki adres bileşeni varsa adres kabul et
+        return (has_area and has_street) or (has_area and has_number) or (has_street and has_number)
+
+    def _maybe_store_issue(self, s: Session, text: str) -> None:
+        if s.issue:
+            return
+        if self._looks_like_municipal(text) and not self._is_valid_address(text):
+            s.issue = text.strip()
 
     def _is_out_of_scope_or_abuse(self, text: str) -> bool:
         """Para isteği, yapay zeka kimlik sorgulama, hakaret vb. — talep akışına sokma, kapsamda kal."""
@@ -299,6 +310,12 @@ class WhatsAppBot:
         cleaned = re.sub(r"[^\w\s]", " ", lowered)
         return " ".join(cleaned.split())
 
+    def _first_name(self, full_name: str) -> str:
+        if not full_name:
+            return "komşum"
+        parts = full_name.strip().split()
+        return parts[0] if parts else "komşum"
+
     def _followup_question(self) -> str:
         return "Başka yardımcı olabileceğim bir şey var mı?"
 
@@ -360,7 +377,7 @@ class WhatsAppBot:
         s.issue = None
 
         return (
-            "Talebinizi ilgili birimlerimize ilettim. "
+            "Talebinizi aldım, gerekli düzenlemeleri yapacağız. "
             + self._followup_question()
         )
 
@@ -376,10 +393,23 @@ class WhatsAppBot:
             self.sessions[user_id] = s
             if not text or self._should_send_welcome(text):
                 return HUMAN_WELCOME_MESSAGE
+        else:
+            # 60 saniye inaktivite kontrolü: eğer son mesajdan 60 saniye geçmişse session'ı sıfırla
+            time_since_last = now - s.last_seen
+            if time_since_last > self.inactivity_timeout:
+                # Session'ı sıfırla ve welcome mesajı dön
+                self.sessions.pop(user_id, None)
+                s = Session(stage="awaiting_category", last_seen=now)
+                self.sessions[user_id] = s
+                if not text or self._should_send_welcome(text):
+                    return HUMAN_WELCOME_MESSAGE
 
         # Oturum güncelle
         s.last_seen = now
         normalized = text.strip()
+
+        if s.stage in {"awaiting_category", "awaiting_name", "awaiting_tc"}:
+            self._maybe_store_issue(s, normalized)
 
         # Kategori/talep aşaması — kullanıcı sorununu anlatırsa (sokak lambası, çöp vb.) doğrudan talep olarak al, menü seçtirme
         if s.stage == "awaiting_category":
@@ -390,14 +420,10 @@ class WhatsAppBot:
                 )
             choice = self._parse_category_choice(text)
             if choice == "request":
-                if not self._is_category_only(text) and self._looks_like_municipal(text):
-                    s.issue = normalized
                 s.stage = "awaiting_name"
-                return (
-                    "Size yardımcı olacağım komşum. Önce adınız ve soyadınız, sonra TC, "
-                    "gerekirse mahalle/sokak gibi adres bilgileri, en sonda da talebinizi açık yazmanızı isteyeceğim. "
-                    "Başlayalım: Adınız ve soyadınız?"
-                )
+                if s.issue:
+                    return "Talebinizi not aldım komşum. İşlemi başlatmak için adınızı ve soyadınızı alabilir miyim?"
+                return "Size yardımcı olacağım komşum. Başlayalım: Adınız ve soyadınız?"
             if choice in {"education", "social_aid", "library", "pharmacy"}:
                 return (
                     "Bu hizmet şu an hazırlık aşamasındadır. En kısa sürede Osman olarak size bu konuda da hizmet vereceğim.\n\n"
@@ -412,13 +438,9 @@ class WhatsAppBot:
                 )
             # Önce belediye talebi mi anla — sokak lambası, çöp, yol vb. ise doğrudan talep olarak al, menü seçtirme
             if self._looks_like_municipal(text):
-                s.issue = normalized  # hatırlatma için sakla, nihai talep son adımda alınacak
+                s.issue = normalized  # ilk mesajdaki talebi sakla
                 s.stage = "awaiting_name"
-                return (
-                    "Size yardımcı olacağım komşum. Adım adım ilerleyeceğiz: önce adınız soyadınız, "
-                    "sonra TC kimlik numaranız, ardından adres bilgileriniz (mahalle, sokak vb.), "
-                    "en son da talebinizi açıkça yazmanızı isteyeceğim. Başlayalım: Adınız ve soyadınız?"
-                )
+                return "Talebinizi not aldım komşum. İşlemi başlatmak için adınızı ve soyadınızı alabilir miyim?"
             # Selam / belirsiz: ne yapabileceğini söyle, numara zorunlu değil
             if self._looks_like_confusion_or_rejection(text):
                 return self._get_osman_response(
@@ -440,17 +462,16 @@ class WhatsAppBot:
                     "Belediye hizmetleri için isteğinizi yazabilirsiniz."
                 )
             if not self._is_valid_name(normalized):
+                issue_note = f" Vatandaşın talebi zaten alındı: '{s.issue}'. ASLA talep sorma." if s.issue else ""
                 return self._get_osman_response(
                     normalized,
-                    "Vatandaş ad-soyad yerine başka bir şey yazdı (soru, red, cümle). 'Anladım' deme. "
-                    "Nazikçe sadece ad ve soyad yazmasını iste (ör: Ahmet Yılmaz)."
+                    f"Vatandaş ad-soyad yerine başka bir şey yazdı (soru, red, cümle). 'Anladım' deme. "
+                    f"Nazikçe sadece ad ve soyad yazmasını iste (ör: Ahmet Yılmaz).{issue_note}"
                 )
             s.name = normalized
             s.stage = "awaiting_tc"
-            return self._get_osman_response(
-                normalized,
-                f"Vatandaş adını soyadını yazdı: {s.name}. Kısa bir memnuniyet ifadesiyle 11 haneli TC kimlik numarasını nazikçe sor."
-            )
+            first_name = self._first_name(s.name)
+            return f"Teşekkür ederim {first_name} komşum. Şimdi de 11 haneli TC kimlik numaranızı rica edebilir miyim?"
 
         if s.stage == "awaiting_tc":
             if self._is_out_of_scope_or_abuse(text):
@@ -460,30 +481,35 @@ class WhatsAppBot:
                     "Belediye hizmetleri için isteğinizi yazabilirsiniz."
                 )
             tc_clean = re.sub(r"\D", "", normalized)
+            issue_note = f" Vatandaşın talebi zaten alındı: '{s.issue}'. ASLA talep sorma." if s.issue else ""
             if len(tc_clean) == 11:
                 s.tc = tc_clean
                 s.stage = "awaiting_address"
                 return self._get_osman_response(
                     normalized,
-                    "TC numarasını aldın. Şimdi mahalle, sokak, bina no gibi adres bilgilerini nazikçe sor."
+                    f"TC numarasını aldın. Şimdi mahalle, sokak, bina no gibi adres bilgilerini nazikçe sor.{issue_note}"
                 )
             if self._looks_like_confusion_or_rejection(normalized):
                 return self._get_osman_response(
                     normalized,
-                    "Vatandaş TC yazmadı; soru veya red ifadesi kullandı. 'Anladım' veya 'geçersiz' deme. "
-                    "Nazikçe işleme devam için 11 haneli TC kimlik numarasını (sadece rakam) yazması gerektiğini söyle."
+                    f"Vatandaş TC yazmadı; soru veya red ifadesi kullandı. 'Anladım' veya 'geçersiz' deme. "
+                    f"Nazikçe işleme devam için 11 haneli TC kimlik numarasını (sadece rakam) yazması gerektiğini söyle.{issue_note}"
                 )
             return self._get_osman_response(
                 normalized,
-                "Vatandaş 11 haneli TC formatında yazmadı. 'Anladım' deme. "
-                "Nazikçe 11 haneli TC kimlik numarasını (sadece rakam) yazmasını iste."
+                f"Vatandaş 11 haneli TC formatında yazmadı. 'Anladım' deme. "
+                f"Nazikçe 11 haneli TC kimlik numarasını (sadece rakam) yazmasını iste.{issue_note}"
             )
 
         if s.stage == "awaiting_address":
             if not self._is_valid_address(normalized):
-                return self._get_osman_response(normalized, "Adres bilgisi yetersiz. Mahalle, sokak gibi detayları içeren adresi tekrar sor.")
+                issue_note = f" Vatandaşın talebi zaten alındı: '{s.issue}'. ASLA talep sorma." if s.issue else ""
+                return self._get_osman_response(normalized, f"Adres bilgisi yetersiz. Mahalle, sokak gibi detayları içeren adresi tekrar sor.{issue_note}")
             s.address = normalized
-            # Her zaman son adım: talebi açık ve net bir şekilde yazmasını iste
+            # Eğer talep zaten konuşmanın başında verilmişse, direkt işlemi sonuçlandır
+            if s.issue:
+                return self._finalize_request(s, s.issue)
+            # Talep yoksa sor
             s.stage = "awaiting_issue"
             return (
                 "Adres bilgisini aldım komşum. Son adım: Lütfen talebinizi açık ve net bir şekilde yazar mısınız? "
@@ -496,7 +522,7 @@ class WhatsAppBot:
         if s.stage == "awaiting_followup":
             if self._is_negative_response(text):
                 s.stage = "awaiting_category"
-                return ""
+                return "Rica ederim komşum. Başka bir isteğiniz olursa yazabilirsiniz."
             normalized_follow = self._normalize_text(text)
             if normalized_follow in {"evet", "var", "tabii", "peki", "olur"}:
                 s.stage = "awaiting_category"
